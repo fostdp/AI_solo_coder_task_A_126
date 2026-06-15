@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>古代铸钟工艺仿真与钟声传播模拟系统</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+            background: #0a0e1a;
+            color: #e0e6f0;
+            overflow: hidden;
+        }
+        #app {
+            display: grid;
+            grid-template-columns: 260px 1fr 340px;
+            grid-template-rows: 60px 1fr;
+            height: 100vh;
+            width: 100vw;
+        }
+        header {
+            grid-column: 1 / 4;
+            grid-row: 1;
+            background: linear-gradient(90deg, #1a1f35, #242844, #1a1f35);
+            border-bottom: 2px solid #c9a959;
+            display: flex;
+            align-items: center;
+            padding: 0 24px;
+            justify-content: space-between;
+        }
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .logo-icon {
+            width: 40px;
+            height: 40px;
+            background: radial-gradient(circle, #e8c468 0%, #8b6914 70%);
+            border-radius: 50% 50% 45% 45%;
+            box-shadow: 0 0 15px rgba(232, 196, 104, 0.4);
+        }
+        .title {
+            font-size: 18px;
+            font-weight: bold;
+            background: linear-gradient(90deg, #e8c468, #ffdf8a, #e8c468);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .subtitle {
+            font-size: 11px;
+            color: #8892b0;
+            margin-top: 2px;
+        }
+        .status-bar {
+            display: flex;
+            gap: 20px;
+            font-size: 12px;
+        }
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+        .status-dot.ok { background: #21d07a; box-shadow: 0 0 8px #21d07a; }
+        .status-dot.warn { background: #ffb547; box-shadow: 0 0 8px #ffb547; animation: blink 1.5s infinite; }
+        .status-dot.err { background: #ff4757; box-shadow: 0 0 8px #ff4757; animation: blink 1s infinite; }
+        @keyframes blink { 50% { opacity: 0.4; } }
+
+        aside.left-panel {
+            grid-column: 1;
+            grid-row: 2;
+            background: #111827;
+            border-right: 1px solid #1f2937;
+            overflow-y: auto;
+            padding: 16px;
+        }
+        .panel-title {
+            font-size: 13px;
+            color: #8892b0;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #1f2937;
+        }
+        .bell-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .bell-card {
+            background: linear-gradient(135deg, #1a2238 0%, #1f2a45 100%);
+            border: 1px solid #2a3552;
+            border-radius: 8px;
+            padding: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .bell-card:hover {
+            border-color: #c9a959;
+            transform: translateX(4px);
+        }
+        .bell-card.active {
+            border-color: #e8c468;
+            box-shadow: 0 0 12px rgba(232, 196, 104, 0.2);
+            background: linear-gradient(135deg, #1e2b4e 0%, #2a3a65 100%);
+        }
+        .bell-card .name {
+            font-size: 14px;
+            font-weight: 600;
+            color: #e8c468;
+            margin-bottom: 4px;
+        }
+        .bell-card .meta {
+            font-size: 11px;
+            color: #8892b0;
+            display: flex;
+            justify-content: space-between;
+        }
+        .bell-card .pitch {
+            display: inline-block;
+            background: #2a3552;
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #a8b2d1;
+            font-size: 10px;
+            margin-top: 4px;
+        }
+        .view-tabs {
+            display: flex;
+            margin-bottom: 16px;
+            border-radius: 6px;
+            overflow: hidden;
+            background: #1a2238;
+            border: 1px solid #2a3552;
+        }
+        .view-tab {
+            flex: 1;
+            padding: 8px 4px;
+            font-size: 11px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            color: #8892b0;
+        }
+        .view-tab:hover { background: #242e4a; }
+        .view-tab.active {
+            background: linear-gradient(180deg, #c9a959, #8b6914);
+            color: #0a0e1a;
+            font-weight: 600;
+        }
+        .action-btns {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 16px;
+        }
+        .btn {
+            padding: 10px 14px;
+            border: none;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #c9a959, #8b6914);
+            color: #0a0e1a;
+        }
+        .btn-primary:hover { filter: brightness(1.15); transform: translateY(-1px); }
+        .btn-secondary {
+            background: #2a3552;
+            color: #e0e6f0;
+            border: 1px solid #3a4769;
+        }
+        .btn-secondary:hover { background: #3a4769; }
+        .btn-danger {
+            background: linear-gradient(135deg, #ff4757, #c0392b);
+            color: white;
+        }
+
+        main {
+            grid-column: 2;
+            grid-row: 2;
+            position: relative;
+            background: #05080f;
+        }
+        #main-canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        #sound-field-canvas {
+            width: 100%;
+            height: 100%;
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        .overlay-info {
+            position: absolute;
+            top: 16px;
+            left: 16px;
+            background: rgba(17, 24, 39, 0.85);
+            backdrop-filter: blur(8px);
+            border: 1px solid #2a3552;
+            border-radius: 8px;
+            padding: 14px;
+            font-size: 12px;
+            min-width: 220px;
+        }
+        .overlay-info .row {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+            border-bottom: 1px dashed #2a3552;
+        }
+        .overlay-info .row:last-child { border-bottom: none; }
+        .overlay-info .label { color: #8892b0; }
+        .overlay-info .value { color: #e8c468; font-weight: 600; }
+        .casting-stage-bar {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80%;
+            background: rgba(17, 24, 39, 0.9);
+            backdrop-filter: blur(8px);
+            border: 1px solid #2a3552;
+            border-radius: 10px;
+            padding: 14px 20px;
+        }
+        .stage-name {
+            font-size: 14px;
+            color: #e8c468;
+            font-weight: 600;
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .progress-track {
+            width: 100%;
+            height: 8px;
+            background: #1f2937;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #8b6914, #e8c468, #ffdf8a);
+            border-radius: 4px;
+            transition: width 0.3s;
+            box-shadow: 0 0 10px rgba(232, 196, 104, 0.5);
+        }
+        .stage-legend {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 8px;
+            font-size: 10px;
+            color: #6b7280;
+        }
+
+        aside.right-panel {
+            grid-column: 3;
+            grid-row: 2;
+            background: #111827;
+            border-left: 1px solid #1f2937;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+        .section {
+            padding: 16px;
+            border-bottom: 1px solid #1f2937;
+        }
+        .alert-list {
+            flex: 1;
+            padding: 12px 16px;
+            overflow-y: auto;
+        }
+        .alert-item {
+            background: #1a2238;
+            border-left: 4px solid #21d07a;
+            border-radius: 6px;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            font-size: 11px;
+        }
+        .alert-item.warning { border-left-color: #ffb547; background: linear-gradient(90deg, rgba(255,181,71,0.1), #1a2238); }
+        .alert-item.danger { border-left-color: #ff4757; background: linear-gradient(90deg, rgba(255,71,87,0.1), #1a2238); }
+        .alert-item.critical { border-left-color: #ff0044; background: linear-gradient(90deg, rgba(255,0,68,0.15), #1a2238); }
+        .alert-item .header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .alert-item .bell { color: #e8c468; font-weight: 600; }
+        .alert-item .sev {
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 9px;
+            text-transform: uppercase;
+        }
+        .sev.warning { background: rgba(255,181,71,0.2); color: #ffb547; }
+        .sev.danger { background: rgba(255,71,87,0.2); color: #ff4757; }
+        .sev.critical { background: rgba(255,0,68,0.2); color: #ff0044; }
+        .alert-item .msg { color: #a8b2d1; line-height: 1.4; }
+        .alert-item .time { color: #6b7280; font-size: 10px; margin-top: 4px; }
+
+        .metric-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .metric-box {
+            background: #1a2238;
+            border: 1px solid #2a3552;
+            border-radius: 6px;
+            padding: 8px;
+            text-align: center;
+        }
+        .metric-box .val {
+            font-size: 16px;
+            font-weight: bold;
+            color: #e8c468;
+        }
+        .metric-box .lbl {
+            font-size: 10px;
+            color: #8892b0;
+            margin-top: 2px;
+        }
+        .bar-chart {
+            height: 100px;
+            display: flex;
+            align-items: flex-end;
+            gap: 4px;
+            margin-top: 8px;
+        }
+        .bar-chart .bar {
+            flex: 1;
+            background: linear-gradient(180deg, #e8c468, #8b6914);
+            border-radius: 2px 2px 0 0;
+            min-height: 2px;
+            transition: height 0.5s;
+        }
+    </style>
+</head>
+<body>
+<div id="app">
+    <header>
+        <div class="logo">
+            <div class="logo-icon"></div>
+            <div>
+                <div class="title">古代铸钟工艺仿真与钟声传播模拟系统</div>
+                <div class="subtitle">Ancient Bell Casting Simulation & Acoustic Propagation System</div>
+            </div>
+        </div>
+        <div class="status-bar">
+            <div class="status-item">
+                <span class="status-dot ok" id="db-status"></span>
+                <span>数据库</span>
+            </div>
+            <div class="status-item">
+                <span class="status-dot ok" id="mqtt-status"></span>
+                <span>MQTT</span>
+            </div>
+            <div class="status-item">
+                <span class="status-dot ok" id="sensor-status"></span>
+                <span>传感器</span>
+            </div>
+            <div class="status-item" style="color:#8892b0;" id="clock"></div>
+        </div>
+    </header>
+
+    <aside class="left-panel">
+        <div class="panel-title">钟体列表</div>
+        <div class="bell-list" id="bell-list"></div>
+        <div class="panel-title" style="margin-top:20px;">视图模式</div>
+        <div class="view-tabs" id="view-tabs">
+            <div class="view-tab active" data-view="3d">三维铸钟</div>
+            <div class="view-tab" data-view="casting">铸造动画</div>
+            <div class="view-tab" data-view="sound">声场云图</div>
+            <div class="view-tab" data-view="defect">缺陷显示</div>
+        </div>
+        <div class="panel-title" style="margin-top:20px;">仿真操作</div>
+        <div class="action-btns">
+            <button class="btn btn-primary" id="btn-sim-casting">⚙ 运行铸造仿真</button>
+            <button class="btn btn-primary" id="btn-sim-acoustic">🔊 运行声学仿真</button>
+            <button class="btn btn-secondary" id="btn-strike">🔔 模拟敲击</button>
+            <button class="btn btn-secondary" id="btn-rotate">⟳ 自动旋转</button>
+            <button class="btn btn-secondary" id="btn-sim-all">▶ 一键全流程</button>
+        </div>
+    </aside>
+
+    <main>
+        <canvas id="main-canvas"></canvas>
+        <canvas id="sound-field-canvas"></canvas>
+        <div class="overlay-info" id="bell-info">
+            <div style="color:#e8c468;font-weight:bold;font-size:14px;margin-bottom:8px;" id="bi-name">曾侯乙编钟#1</div>
+            <div class="row"><span class="label">朝代/类型</span><span class="value" id="bi-dynasty">先秦 · 编钟</span></div>
+            <div class="row"><span class="label">高度</span><span class="value" id="bi-height">0.75 m</span></div>
+            <div class="row"><span class="label">口径</span><span class="value" id="bi-diameter">0.52 m</span></div>
+            <div class="row"><span class="label">重量</span><span class="value" id="bi-weight">28.5 kg</span></div>
+            <div class="row"><span class="label">预期音高</span><span class="value" id="bi-pitch">C4 · 261.63 Hz</span></div>
+            <div class="row" style="margin-top:6px;"><span class="label">当前温度</span><span class="value" id="bi-temp">25.0 °C</span></div>
+            <div class="row"><span class="label">壁厚</span><span class="value" id="bi-thickness">20.8 mm</span></div>
+            <div class="row"><span class="label">实测基频</span><span class="value" id="bi-freq">262.10 Hz</span></div>
+        </div>
+        <div class="casting-stage-bar" id="casting-stage-bar" style="display:none;">
+            <div class="stage-name">
+                <span id="stage-name">浇注阶段</span>
+                <span id="stage-progress">45%</span>
+            </div>
+            <div class="progress-track">
+                <div class="progress-fill" id="progress-fill" style="width:45%;"></div>
+            </div>
+            <div class="stage-legend">
+                <span>制模</span><span>熔炼</span><span>浇注</span><span>冷却</span><span>凝固</span><span>完成</span>
+            </div>
+        </div>
+    </main>
+
+    <aside class="right-panel">
+        <div class="section">
+            <div class="panel-title">实时参数</div>
+            <div class="metric-grid" id="metric-grid">
+                <div class="metric-box"><div class="val" id="m-temp">25°C</div><div class="lbl">温度</div></div>
+                <div class="metric-box"><div class="val" id="m-freq">262Hz</div><div class="lbl">基频</div></div>
+                <div class="metric-box"><div class="val" id="m-cu">85%</div><div class="lbl">含铜量</div></div>
+                <div class="metric-box"><div class="val" id="m-sn">13%</div><div class="lbl">含锡量</div></div>
+            </div>
+            <div class="panel-title" style="margin-top:14px;">声学频谱</div>
+            <div class="bar-chart" id="freq-bars"></div>
+        </div>
+        <div style="padding:12px 16px 4px;display:flex;justify-content:space-between;align-items:center;">
+            <div class="panel-title" style="border:none;padding:0;margin:0;">告警事件 <span id="alert-count" style="color:#ff4757;">(0)</span></div>
+        </div>
+        <div class="alert-list" id="alert-list"></div>
+    </aside>
+</div>
+
+<script type="importmap">
+{
+    "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+}
+</script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
