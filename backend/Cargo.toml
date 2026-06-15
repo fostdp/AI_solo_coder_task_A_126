@@ -13,8 +13,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-clickhouse = { version = "0.11", features = ["uuid", "chrono"] }
-rumqttc = { version = "0.22", features = ["tokio-runtime"] }
+clickhouse = { version = "0.11", features = ["uuid"] }
+rumqttc = { version = "0.22" }
 rand = "0.8"
 nalgebra = "0.32"
 num-traits = "0.2"
@@ -23,6 +23,8 @@ anyhow = "1.0"
 clap = { version = "4.4", features = ["derive"] }
 tower-http = { version = "0.5", features = ["cors"] }
 futures = "0.3"
+once_cell = "1.19"
+include_dir = "0.7"
 
 [profile.release]
 opt-level = 3

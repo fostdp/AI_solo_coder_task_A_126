@@ -1,31 +1,39 @@
+use crate::config_loader::{self, Material};
 use crate::models::{CastingSimRequest, CastingSimulation};
 use chrono::Utc;
 use rand::Rng;
 use std::f64::consts::PI;
 use uuid::Uuid;
 
-const TLIQUIDUS: f64 = 1083.0;
-const TSOLIDUS: f64 = 950.0;
 const AMBIENT_TEMP: f64 = 25.0;
-const THERMAL_DIFFUSIVITY: f64 = 1.2e-5;
-const SHRINKAGE_COEFF: f64 = 0.045;
-
-const NIYAMA_CRITICAL: f64 = 0.8;
-const NIYAMA_HIGH_RISK: f64 = 0.5;
 const CELL_SIZE: f64 = 0.002;
 const TIME_STEP: f64 = 1.0;
 
-pub fn simulate_casting(req: &CastingSimRequest) -> CastingSimulation {
+pub fn simulate_casting(req: &CastingSimRequest, material: &Material) -> CastingSimulation {
     let grid_size = req.grid_size.unwrap_or(20);
     let mut rng = rand::thread_rng();
 
-    let temp_field_t0 = compute_temperature_field(req.initial_temp, grid_size, 3500.0);
-    let temp_field_t1 = compute_temperature_field(req.initial_temp, grid_size, 3600.0);
-    let solid_fraction = compute_solid_fraction(&temp_field_t1);
+    let t_liquidus = material.liquidus_temperature;
+    let t_solidus = material.solidus_temperature;
+    let alpha = material.thermal_diffusivity;
+    let beta = material.shrinkage_coefficient;
+    let niyama_critical = material.niyama_critical;
+    let niyama_high_risk = material.niyama_high_risk;
+
+    let temp_field_t0 = compute_temperature_field(req.initial_temp, grid_size, 3500.0, alpha);
+    let temp_field_t1 = compute_temperature_field(req.initial_temp, grid_size, 3600.0, alpha);
+    let solid_fraction = compute_solid_fraction(&temp_field_t1, t_liquidus, t_solidus);
     let temp_gradient = compute_temperature_gradient(&temp_field_t1);
     let cooling_rate_field = compute_cooling_rate_field(&temp_field_t0, &temp_field_t1);
     let niyama_field = compute_niyama_criterion(&temp_gradient, &cooling_rate_field);
-    let shrinkage_porosity = compute_shrinkage_porosity(&solid_fraction, &temp_field_t1, &niyama_field);
+    let shrinkage_porosity = compute_shrinkage_porosity(
+        &solid_fraction,
+        &temp_field_t1,
+        &niyama_field,
+        beta,
+        niyama_critical,
+        niyama_high_risk,
+    );
     let defect_locations = identify_defects(&shrinkage_porosity, 0.02);
     let max_shrinkage = shrinkage_porosity
         .iter()
@@ -52,24 +60,31 @@ pub fn simulate_casting(req: &CastingSimRequest) -> CastingSimulation {
         "low".to_string()
     };
 
+    let defect_count = defect_locations.len() as u32;
+
     CastingSimulation {
         sim_id: Uuid::new_v4(),
         bell_id: req.bell_id,
         timestamp: Utc::now(),
         sim_type: req.sim_type.clone(),
         time_step_sec: 3600,
-        temp_field,
-        solid_fraction,
-        shrinkage_porosity,
-        defect_locations,
-        defect_count: defect_locations.len() as u32,
+        temp_field: serde_json::to_string(&temp_field_t1).unwrap_or_default(),
+        solid_fraction: serde_json::to_string(&solid_fraction).unwrap_or_default(),
+        shrinkage_porosity: serde_json::to_string(&shrinkage_porosity).unwrap_or_default(),
+        defect_locations: serde_json::to_string(&defect_locations).unwrap_or_default(),
+        defect_count,
         max_shrinkage,
         cooling_rate: avg_cooling_rate,
         prediction_risk,
     }
 }
 
-fn compute_temperature_field(initial_temp: f64, n: usize, time_sec: f64) -> Vec<Vec<Vec<f64>>> {
+fn compute_temperature_field(
+    initial_temp: f64,
+    n: usize,
+    time_sec: f64,
+    alpha: f64,
+) -> Vec<Vec<Vec<f64>>> {
     let mut field = vec![vec![vec![0.0f64; n]; n]; n];
     let center = (n as f64) / 2.0;
 
@@ -85,7 +100,7 @@ fn compute_temperature_field(initial_temp: f64, n: usize, time_sec: f64) -> Vec<
                     field[i][j][k] = AMBIENT_TEMP;
                 } else {
                     let normalized_r = r.clamp(0.0, 1.0);
-                    let cooling_factor = (-normalized_r * normalized_r * time_sec * THERMAL_DIFFUSIVITY / 100.0).exp();
+                    let cooling_factor = (-normalized_r * normalized_r * time_sec * alpha / 100.0).exp();
                     let surface_cooling = (1.0 - normalized_r) * 0.3 + 0.7;
                     field[i][j][k] = AMBIENT_TEMP
                         + (initial_temp - AMBIENT_TEMP) * cooling_factor * surface_cooling;
@@ -96,7 +111,11 @@ fn compute_temperature_field(initial_temp: f64, n: usize, time_sec: f64) -> Vec<
     field
 }
 
-fn compute_solid_fraction(temp_field: &[Vec<Vec<f64>>]) -> Vec<Vec<Vec<f64>>> {
+fn compute_solid_fraction(
+    temp_field: &[Vec<Vec<f64>>],
+    t_liquidus: f64,
+    t_solidus: f64,
+) -> Vec<Vec<Vec<f64>>> {
     let n = temp_field.len();
     let mut fraction = vec![vec![vec![0.0f64; n]; n]; n];
 
@@ -104,12 +123,12 @@ fn compute_solid_fraction(temp_field: &[Vec<Vec<f64>>]) -> Vec<Vec<Vec<f64>>> {
         for j in 0..n {
             for k in 0..n {
                 let t = temp_field[i][j][k];
-                if t >= TLIQUIDUS {
+                if t >= t_liquidus {
                     fraction[i][j][k] = 0.0;
-                } else if t <= TSOLIDUS {
+                } else if t <= t_solidus {
                     fraction[i][j][k] = 1.0;
                 } else {
-                    let ratio = (TLIQUIDUS - t) / (TLIQUIDUS - TSOLIDUS);
+                    let ratio = (t_liquidus - t) / (t_liquidus - t_solidus);
                     fraction[i][j][k] = ratio.powf(1.5);
                 }
             }
@@ -188,6 +207,9 @@ fn compute_shrinkage_porosity(
     solid_fraction: &[Vec<Vec<f64>>],
     temp_field: &[Vec<Vec<f64>>],
     niyama_field: &[Vec<Vec<f64>>],
+    beta: f64,
+    niyama_critical: f64,
+    niyama_high_risk: f64,
 ) -> Vec<Vec<Vec<f64>>> {
     let n = solid_fraction.len();
     let mut porosity = vec![vec![vec![0.0f64; n]; n]; n];
@@ -200,14 +222,14 @@ fn compute_shrinkage_porosity(
                 let niyama = niyama_field[i][j][k];
 
                 if fs > 0.3 && fs < 0.95 {
-                    let base_porosity = SHRINKAGE_COEFF * (1.0 - fs) * (fs - 0.3);
+                    let base_porosity = beta * (1.0 - fs) * (fs - 0.3);
 
-                    let niyama_factor = if niyama < NIYAMA_HIGH_RISK {
-                        1.0 + 2.5 * (NIYAMA_HIGH_RISK - niyama) / NIYAMA_HIGH_RISK
-                    } else if niyama < NIYAMA_CRITICAL {
-                        1.0 + 1.2 * (NIYAMA_CRITICAL - niyama) / (NIYAMA_CRITICAL - NIYAMA_HIGH_RISK)
+                    let niyama_factor = if niyama < niyama_high_risk {
+                        1.0 + 2.5 * (niyama_high_risk - niyama) / niyama_high_risk
+                    } else if niyama < niyama_critical {
+                        1.0 + 1.2 * (niyama_critical - niyama) / (niyama_critical - niyama_high_risk)
                     } else {
-                        (NIYAMA_CRITICAL / niyama).powf(0.7)
+                        (niyama_critical / niyama).powf(0.7)
                     };
 
                     let local_cooling = if i > 0 && i < n - 1 {

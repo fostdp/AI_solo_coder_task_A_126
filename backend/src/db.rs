@@ -192,7 +192,8 @@ impl Database {
             alert_id
         );
         self.client
-            .execute(&query)
+            .query(&query)
+            .execute()
             .await
             .context("Failed to resolve alert")?;
         Ok(())

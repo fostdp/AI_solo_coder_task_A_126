@@ -1,0 +1,65 @@
+{
+    "air": {
+        "speed_of_sound": 343.0,
+        "density": 1.21,
+        "impedance": 415.0,
+        "attenuation_coeff": 0.001
+    },
+    "bell_acoustics": {
+        "reference_pressure": 2.0e-5,
+        "pitch_tolerance_cents": 50.0,
+        "pitch_warning_cents": 75.0,
+        "pitch_critical_cents": 100.0,
+        "mode_frequency_ratios": [
+            {"mode": "hum", "ratio": 0.5, "weight": 0.2},
+            {"mode": "prime", "ratio": 1.0, "weight": 1.0},
+            {"mode": "tierce", "ratio": 1.19, "weight": 0.6},
+            {"mode": "quint", "ratio": 1.50, "weight": 0.5},
+            {"mode": "nominal", "ratio": 2.00, "weight": 0.8},
+            {"mode": "third", "ratio": 2.50, "weight": 0.3},
+            {"mode": "fifth", "ratio": 3.00, "weight": 0.25},
+            {"mode": "octave", "ratio": 4.00, "weight": 0.2}
+        ],
+        "decay_time_range": {
+            "min": 2.0,
+            "max": 8.0
+        }
+    },
+    "bem_solver": {
+        "min_panels": 16,
+        "max_panels": 128,
+        "default_panels": 32,
+        "tikhonov_alpha_min": 1e-8,
+        "tikhonov_alpha_max": 1e-2,
+        "low_frequency_threshold_hz": 100.0,
+        "far_field_distance_m": 10.0,
+        "integration_points": 4,
+        "singular_treatment": "collocation"
+    },
+    "sound_field_visualization": {
+        "min_frequency_hz": 30.0,
+        "max_frequency_hz": 2000.0,
+        "default_wave_speed": 343.0,
+        "colormap_hue_range": {
+            "min": 0.65,
+            "max": 0.0
+        },
+        "animation_interval_ms": 50,
+        "high_dpi_scale": 2.0
+    },
+    "alert_thresholds": {
+        "temperature_max_celsius": 1200.0,
+        "thickness_deviation_warning_pct": 10.0,
+        "thickness_deviation_danger_pct": 20.0,
+        "alloy_sum_tolerance_pct": 2.0,
+        "cooling_rate_normal_min_cps": 0.5,
+        "cooling_rate_normal_max_cps": 5.0
+    },
+    "modal_analysis": {
+        "min_mode_order": 1,
+        "max_mode_order": 8,
+        "damping_coefficient": 0.005,
+        "poisson_correction_factor": 1.03,
+        "thickness_correction_exponent": 1.0
+    }
+}

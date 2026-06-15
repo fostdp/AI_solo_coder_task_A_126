@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use clickhouse::Row;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -17,7 +18,7 @@ pub struct Bell {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Row)]
 pub struct SensorReading {
     pub reading_id: Uuid,
     pub bell_id: Uuid,
@@ -34,7 +35,7 @@ pub struct SensorReading {
     pub acoustic_freq_hz: f64,
     pub acoustic_amplitude: f64,
     pub acoustic_decay: f64,
-    pub acoustic_harmonics: Vec<f64>,
+    pub acoustic_harmonics: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,17 +56,17 @@ pub struct SensorReadingIn {
     pub acoustic_harmonics: Vec<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Row)]
 pub struct CastingSimulation {
     pub sim_id: Uuid,
     pub bell_id: Uuid,
     pub timestamp: DateTime<Utc>,
     pub sim_type: String,
     pub time_step_sec: u32,
-    pub temp_field: Vec<Vec<Vec<f64>>>,
-    pub solid_fraction: Vec<Vec<Vec<f64>>>,
-    pub shrinkage_porosity: Vec<Vec<Vec<f64>>>,
-    pub defect_locations: Vec<(f64, f64, f64, f64)>,
+    pub temp_field: String,
+    pub solid_fraction: String,
+    pub shrinkage_porosity: String,
+    pub defect_locations: String,
     pub defect_count: u32,
     pub max_shrinkage: f64,
     pub cooling_rate: f64,
@@ -80,16 +81,16 @@ pub struct CastingSimRequest {
     pub grid_size: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Row)]
 pub struct AcousticSimulation {
     pub sim_id: Uuid,
     pub bell_id: Uuid,
     pub timestamp: DateTime<Utc>,
     pub method: String,
-    pub natural_frequencies: Vec<f64>,
-    pub mode_shapes: Vec<Vec<Vec<Vec<f64>>>>,
-    pub far_field_pressure: Vec<(f64, f64, f64)>,
-    pub sound_field_2d: Vec<Vec<f64>>,
+    pub natural_frequencies: String,
+    pub mode_shapes: String,
+    pub far_field_pressure: String,
+    pub sound_field_2d: String,
     pub directivity_index: f64,
     pub sound_power: f64,
     pub pitch_deviation_cents: f64,
@@ -105,7 +106,7 @@ pub struct AcousticSimRequest {
     pub density: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Row)]
 pub struct Alert {
     pub alert_id: Uuid,
     pub bell_id: Uuid,
@@ -119,7 +120,7 @@ pub struct Alert {
     pub resolved_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Row)]
 pub struct CastingProcess {
     pub process_id: Uuid,
     pub bell_id: Uuid,

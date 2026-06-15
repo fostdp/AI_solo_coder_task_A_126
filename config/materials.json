@@ -1,0 +1,89 @@
+{
+    "bronze_qing_qin": {
+        "name": "先秦锡青铜（编钟标准）",
+        "density": 8800.0,
+        "young_modulus": 1.15e11,
+        "poisson_ratio": 0.34,
+        "thermal_conductivity": 65.0,
+        "thermal_diffusivity": 1.25e-5,
+        "specific_heat": 385.0,
+        "melting_point": 960.0,
+        "liquidus_temperature": 1083.0,
+        "solidus_temperature": 950.0,
+        "shrinkage_coefficient": 0.045,
+        "niyama_critical": 0.8,
+        "niyama_high_risk": 0.5,
+        "composition": {
+            "cu": 0.846,
+            "sn": 0.126,
+            "pb": 0.014,
+            "zn": 0.004,
+            "other": 0.010
+        }
+    },
+    "bronze_yong_le": {
+        "name": "明代低锡青铜（永乐大钟）",
+        "density": 8720.0,
+        "young_modulus": 1.08e11,
+        "poisson_ratio": 0.35,
+        "thermal_conductivity": 72.0,
+        "thermal_diffusivity": 1.35e-5,
+        "specific_heat": 400.0,
+        "melting_point": 980.0,
+        "liquidus_temperature": 1060.0,
+        "solidus_temperature": 935.0,
+        "shrinkage_coefficient": 0.042,
+        "niyama_critical": 0.75,
+        "niyama_high_risk": 0.45,
+        "composition": {
+            "cu": 0.801,
+            "sn": 0.164,
+            "pb": 0.018,
+            "zn": 0.006,
+            "other": 0.011
+        }
+    },
+    "bronze_fo_zhong": {
+        "name": "清代高锡青铜（佛钟）",
+        "density": 8850.0,
+        "young_modulus": 1.20e11,
+        "poisson_ratio": 0.33,
+        "thermal_conductivity": 60.0,
+        "thermal_diffusivity": 1.15e-5,
+        "specific_heat": 375.0,
+        "melting_point": 940.0,
+        "liquidus_temperature": 1090.0,
+        "solidus_temperature": 960.0,
+        "shrinkage_coefficient": 0.048,
+        "niyama_critical": 0.85,
+        "niyama_high_risk": 0.55,
+        "composition": {
+            "cu": 0.775,
+            "sn": 0.185,
+            "pb": 0.022,
+            "zn": 0.008,
+            "other": 0.010
+        }
+    },
+    "cast_iron": {
+        "name": "灰铸铁（参考）",
+        "density": 7200.0,
+        "young_modulus": 1.50e11,
+        "poisson_ratio": 0.27,
+        "thermal_conductivity": 55.0,
+        "thermal_diffusivity": 1.80e-5,
+        "specific_heat": 450.0,
+        "melting_point": 1150.0,
+        "liquidus_temperature": 1250.0,
+        "solidus_temperature": 1100.0,
+        "shrinkage_coefficient": 0.030,
+        "niyama_critical": 0.6,
+        "niyama_high_risk": 0.35,
+        "composition": {
+            "fe": 0.940,
+            "c": 0.035,
+            "si": 0.020,
+            "mn": 0.005
+        }
+    }
+}

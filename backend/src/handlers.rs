@@ -1,7 +1,6 @@
-use crate::alert_service::AlertService;
 use crate::db::Database;
+use crate::message_bus::{BusMessage, SensorToCastingTx, SensorToAcousticTx, SensorToDtuTx};
 use crate::models::*;
-use crate::simulation;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -10,13 +9,14 @@ use axum::{
 };
 use chrono::Utc;
 use serde::Deserialize;
-use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: Database,
-    pub alert_service: Arc<AlertService>,
+    pub tx_to_dtu: SensorToDtuTx,
+    pub tx_to_casting: SensorToCastingTx,
+    pub tx_to_acoustic: SensorToAcousticTx,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,26 +83,29 @@ pub async fn post_sensor_reading(
         acoustic_freq_hz: input.acoustic_freq_hz,
         acoustic_amplitude: input.acoustic_amplitude,
         acoustic_decay: input.acoustic_decay,
-        acoustic_harmonics: input.acoustic_harmonics,
+        acoustic_harmonics: serde_json::to_string(&input.acoustic_harmonics).unwrap_or_default(),
     };
 
     let bell_opt = state.db.get_bell(reading.bell_id).await.ok().flatten();
+    let reading_id = reading.reading_id;
 
-    let alerts = state
-        .alert_service
-        .check_sensor_reading(&reading, bell_opt.as_ref())
-        .await
-        .ok();
+    let msg = BusMessage::SensorReadingReceived {
+        reading,
+        bell: bell_opt,
+    };
 
-    match state.db.insert_sensor_reading(&reading).await {
+    match state.tx_to_dtu.send(msg).await {
         Ok(_) => Json(ApiResponse::ok(serde_json::json!({
-            "reading_id": reading.reading_id,
-            "alerts_triggered": alerts.map(|a| a.len()).unwrap_or(0),
+            "reading_id": reading_id,
+            "status": "submitted_to_dtu_receiver",
         })))
         .into_response(),
         Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<serde_json::Value>::err(format!("{}", e))),
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiResponse::<serde_json::Value>::err(format!(
+                "DTU接收器不可用: {}",
+                e
+            ))),
         )
             .into_response(),
     }
@@ -128,21 +131,26 @@ pub async fn run_casting_simulation(
     State(state): State<AppState>,
     Json(req): Json<CastingSimRequest>,
 ) -> impl IntoResponse {
-    let sim = simulation::simulate_casting(&req);
+    let bell_opt = state.db.get_bell(req.bell_id).await.ok().flatten();
+    let req_clone = req.clone();
 
-    if let Err(e) = state
-        .alert_service
-        .check_casting_simulation(&sim)
-        .await
-    {
-        tracing::warn!("Casting sim alert check error: {}", e);
-    }
+    let msg = BusMessage::CastingSimRequested {
+        req,
+        bell: bell_opt,
+    };
 
-    match state.db.insert_casting_simulation(&sim).await {
-        Ok(_) => Json(ApiResponse::ok(sim)).into_response(),
+    match state.tx_to_casting.send(msg).await {
+        Ok(_) => Json(ApiResponse::ok(serde_json::json!({
+            "status": "submitted_to_casting_simulator",
+            "request": req_clone,
+        })))
+        .into_response(),
         Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<CastingSimulation>::err(format!("{}", e))),
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiResponse::<serde_json::Value>::err(format!(
+                "铸造仿真器不可用: {}",
+                e
+            ))),
         )
             .into_response(),
     }
@@ -169,21 +177,25 @@ pub async fn run_acoustic_simulation(
     Json(req): Json<AcousticSimRequest>,
 ) -> impl IntoResponse {
     let bell_opt = state.db.get_bell(req.bell_id).await.ok().flatten();
-    let sim = simulation::simulate_acoustic(&req, bell_opt.as_ref());
+    let req_clone = req.clone();
 
-    if let Err(e) = state
-        .alert_service
-        .check_acoustic_simulation(&sim)
-        .await
-    {
-        tracing::warn!("Acoustic sim alert check error: {}", e);
-    }
+    let msg = BusMessage::AcousticSimRequested {
+        req,
+        bell: bell_opt,
+    };
 
-    match state.db.insert_acoustic_simulation(&sim).await {
-        Ok(_) => Json(ApiResponse::ok(sim)).into_response(),
+    match state.tx_to_acoustic.send(msg).await {
+        Ok(_) => Json(ApiResponse::ok(serde_json::json!({
+            "status": "submitted_to_acoustic_simulator",
+            "request": req_clone,
+        })))
+        .into_response(),
         Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<AcousticSimulation>::err(format!("{}", e))),
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiResponse::<serde_json::Value>::err(format!(
+                "声学仿真器不可用: {}",
+                e
+            ))),
         )
             .into_response(),
     }

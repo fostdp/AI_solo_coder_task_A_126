@@ -1,19 +1,13 @@
+use crate::config_loader::{self, ACOUSTIC_PARAMS, Material};
 use crate::models::{AcousticSimRequest, AcousticSimulation, Bell};
 use chrono::Utc;
 use std::f64::consts::PI;
 use uuid::Uuid;
 
-const SPEED_OF_SOUND: f64 = 343.0;
-const AIR_DENSITY: f64 = 1.21;
-
-const TIKHONOV_ALPHA_MIN: f64 = 1e-8;
-const TIKHONOV_ALPHA_MAX: f64 = 1e-2;
-const LOW_FREQ_THRESHOLD: f64 = 100.0;
-
-pub fn simulate_acoustic(req: &AcousticSimRequest, bell: Option<&Bell>) -> AcousticSimulation {
-    let young_modulus = req.young_modulus.unwrap_or(1.1e11);
-    let poisson_ratio = req.poisson_ratio.unwrap_or(0.34);
-    let density = req.density.unwrap_or(8800.0);
+pub fn simulate_acoustic(req: &AcousticSimRequest, bell: Option<&Bell>, material: &Material) -> AcousticSimulation {
+    let young_modulus = req.young_modulus.unwrap_or(material.young_modulus);
+    let poisson_ratio = req.poisson_ratio.unwrap_or(material.poisson_ratio);
+    let density = req.density.unwrap_or(material.density);
 
     let (height, diameter) = bell
         .map(|b| (b.height_m, b.diameter_m))
@@ -27,19 +21,18 @@ pub fn simulate_acoustic(req: &AcousticSimRequest, bell: Option<&Bell>) -> Acous
     let directivity_index = 2.0 + natural_frequencies[0].log10() * 1.5;
     let sound_power = compute_sound_power(&natural_frequencies, &far_field_pressure, height);
 
-    let pitch_deviation_cents = 1200.0 * (natural_frequencies[0] / expected_freq).log2()
-        * (0.85 + 0.3 * (natural_frequencies[0] % 1.0));
-    let pitch_ok = pitch_deviation_cents.abs() < 50.0;
+    let pitch_deviation_cents = 1200.0 * (natural_frequencies[0] / expected_freq).log2();
+    let pitch_ok = pitch_deviation_cents.abs() < ACOUSTIC_PARAMS.bell_acoustics.pitch_tolerance_cents;
 
     AcousticSimulation {
         sim_id: Uuid::new_v4(),
         bell_id: req.bell_id,
         timestamp: Utc::now(),
         method: req.method.clone(),
-        natural_frequencies,
-        mode_shapes,
-        far_field_pressure,
-        sound_field_2d,
+        natural_frequencies: serde_json::to_string(&natural_frequencies).unwrap_or_default(),
+        mode_shapes: serde_json::to_string(&mode_shapes).unwrap_or_default(),
+        far_field_pressure: serde_json::to_string(&far_field_pressure).unwrap_or_default(),
+        sound_field_2d: serde_json::to_string(&sound_field_2d).unwrap_or_default(),
         directivity_index,
         sound_power,
         pitch_deviation_cents,
@@ -71,8 +64,7 @@ fn compute_natural_frequencies(
         freqs.push(freq);
     }
 
-    let scale = 261.63 / freqs[0];
-    freqs.iter().map(|f| f * scale).collect()
+    freqs
 }
 
 fn compute_mode_shapes(
@@ -106,11 +98,15 @@ fn compute_mode_shapes(
 }
 
 fn compute_tikhonov_alpha(freq: f64, cond_est: f64) -> f64 {
-    let freq_factor = if freq < LOW_FREQ_THRESHOLD {
-        let ratio = (LOW_FREQ_THRESHOLD - freq) / LOW_FREQ_THRESHOLD;
+    let alpha_min = ACOUSTIC_PARAMS.bem_solver.tikhonov_alpha_min;
+    let alpha_max = ACOUSTIC_PARAMS.bem_solver.tikhonov_alpha_max;
+    let low_freq = ACOUSTIC_PARAMS.bem_solver.low_frequency_threshold_hz;
+
+    let freq_factor = if freq < low_freq {
+        let ratio = (low_freq - freq) / low_freq;
         1.0 + ratio * 100.0
     } else {
-        (LOW_FREQ_THRESHOLD / freq).min(1.0)
+        (low_freq / freq).min(1.0)
     };
 
     let cond_factor = if cond_est > 1e6 {
@@ -119,7 +115,7 @@ fn compute_tikhonov_alpha(freq: f64, cond_est: f64) -> f64 {
         1.0
     };
 
-    (TIKHONOV_ALPHA_MAX * freq_factor * cond_factor).min(TIKHONOV_ALPHA_MAX)
+    (alpha_max * freq_factor * cond_factor).min(alpha_max).max(alpha_min)
 }
 
 fn estimate_condition_number(matrix: &[Vec<f64>]) -> f64 {
@@ -351,11 +347,15 @@ fn compute_far_field_pressure(
     diameter: f64,
 ) -> Vec<(f64, f64, f64)> {
     let mut result = Vec::new();
-    let r = 10.0;
+    let r = ACOUSTIC_PARAMS.bem_solver.far_field_distance_m;
     let base_freq = frequencies[0];
-    let k = 2.0 * PI * base_freq / SPEED_OF_SOUND;
+    let speed_of_sound = ACOUSTIC_PARAMS.air.speed_of_sound;
+    let air_density = ACOUSTIC_PARAMS.air.density;
+    let low_freq = ACOUSTIC_PARAMS.bem_solver.low_frequency_threshold_hz;
+    let p_ref = ACOUSTIC_PARAMS.bell_acoustics.reference_pressure;
+    let k = 2.0 * PI * base_freq / speed_of_sound;
 
-    let n_panels = 32;
+    let n_panels = ACOUSTIC_PARAMS.bem_solver.default_panels;
     let panels = generate_bell_panels(height, diameter, n_panels);
     let bell_area = PI * (diameter / 2.0).powi(2) + PI * diameter * height;
 
@@ -363,7 +363,7 @@ fn compute_far_field_pressure(
     let cond_est = estimate_condition_number(&bem_matrix);
     let alpha = compute_tikhonov_alpha(base_freq, cond_est);
 
-    let base_amp = AIR_DENSITY * SPEED_OF_SOUND * bell_area * 0.001 / (2.0 * PI * r);
+    let base_amp = air_density * speed_of_sound * bell_area * 0.001 / (2.0 * PI * r);
     let rhs = construct_bem_rhs(&panels, k, base_amp);
     let surface_pressure = solve_tikhonov(&bem_matrix, &rhs, alpha);
 
@@ -372,7 +372,6 @@ fn compute_far_field_pressure(
         avg_surface_p += p.abs();
     }
     avg_surface_p /= surface_pressure.len() as f64;
-    let p_ref = 2.0e-5;
 
     for theta_deg in 0..=180u32 {
         let theta = theta_deg as f64 * PI / 180.0;
@@ -382,8 +381,8 @@ fn compute_far_field_pressure(
             let directivity = (1.0 + theta.cos().powi(2))
                 * (1.0 + 0.5 * (2.0 * phi).cos());
 
-            let reg_factor = if base_freq < LOW_FREQ_THRESHOLD {
-                0.7 + 0.3 * (base_freq / LOW_FREQ_THRESHOLD)
+            let reg_factor = if base_freq < low_freq {
+                0.7 + 0.3 * (base_freq / low_freq)
             } else {
                 1.0
             };
@@ -396,8 +395,8 @@ fn compute_far_field_pressure(
         }
     }
 
-    if base_freq < LOW_FREQ_THRESHOLD {
-        eprintln!(
+    if base_freq < low_freq {
+        tracing::debug!(
             "[BEM] freq={:.1}Hz, cond≈{:.2e}, α={:.2e}, panels={}",
             base_freq, cond_est, alpha, n_panels
         );
@@ -410,7 +409,7 @@ fn compute_sound_field_2d(frequencies: &[f64], height: f64) -> Vec<Vec<f64>> {
     let n = 100;
     let mut field = vec![vec![0.0f64; n]; n];
     let freq = frequencies[0];
-    let k = 2.0 * PI * freq / SPEED_OF_SOUND;
+    let k = 2.0 * PI * freq / ACOUSTIC_PARAMS.air.speed_of_sound;
 
     let cx = n as f64 / 2.0;
     let cy = n as f64 * 0.3;
@@ -453,7 +452,7 @@ fn compute_sound_power(
         let theta_avg = ((theta1 + theta2) / 2.0).to_radians();
 
         let d_solid_angle = theta_avg.sin() * d_theta * d_phi;
-        let intensity = p_pa * p_pa / (AIR_DENSITY * SPEED_OF_SOUND);
+        let intensity = p_pa * p_pa / (ACOUSTIC_PARAMS.air.density * ACOUSTIC_PARAMS.air.speed_of_sound);
         total_power += intensity * r * r * d_solid_angle;
     }
     total_power * height / 2.0
