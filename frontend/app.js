@@ -22,6 +22,10 @@ const state = {
     clock: new THREE.Clock(),
     vibrationAmp: 0,
     strikeIntensity: 0,
+    soundFieldWorker: null,
+    soundFieldPending: false,
+    soundFieldReqId: 0,
+    soundFieldCtx: null,
 };
 
 const bellNameMap = {};
@@ -612,8 +616,56 @@ function visualizeDefects(sim) {
     });
 }
 
-/* ========================= 声场云图 ========================= */
-function drawSoundField() {
+/* ========================= WebWorker 初始化 ========================= */
+function initSoundFieldWorker() {
+    if (typeof Worker === 'undefined') {
+        console.warn('WebWorker not supported, falling back to main thread rendering');
+        state.soundFieldWorker = null;
+        return;
+    }
+
+    try {
+        state.soundFieldWorker = new Worker('sound_field_worker.js');
+        state.soundFieldWorker.onmessage = (e) => {
+            const { type, id, imageData, width, height, renderTime } = e.data;
+            if (type === 'result' && state.viewMode === 'sound') {
+                const canvas = $('sound-field-canvas');
+                const ctx = state.soundFieldCtx || canvas.getContext('2d');
+                state.soundFieldCtx = ctx;
+
+                canvas.width = width;
+                canvas.height = height;
+
+                const imgData = new ImageData(
+                    new Uint8ClampedArray(imageData),
+                    width / (window.devicePixelRatio || 1),
+                    height / (window.devicePixelRatio || 1)
+                );
+
+                ctx.putImageData(imgData, 0, 0);
+                drawSoundFieldOverlay(width / (window.devicePixelRatio || 1), height / (window.devicePixelRatio || 1));
+
+                if (renderTime > 16) {
+                    console.debug(`[SoundField] rendered in ${renderTime.toFixed(1)}ms`);
+                }
+            }
+            state.soundFieldPending = false;
+        };
+
+        state.soundFieldWorker.onerror = (e) => {
+            console.error('SoundField Worker error:', e);
+            state.soundFieldWorker = null;
+            state.soundFieldPending = false;
+        };
+
+        console.log('✅ SoundField WebWorker initialized');
+    } catch (e) {
+        console.warn('Failed to init WebWorker, falling back:', e);
+        state.soundFieldWorker = null;
+    }
+}
+
+function drawSoundFieldFallback() {
     const canvas = $('sound-field-canvas');
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth;
@@ -669,6 +721,76 @@ function drawSoundField() {
         }
     }
     ctx.putImageData(imgData, 0, 0);
+
+    const grad = ctx.createRadialGradient(cx, cy, 5, cx, cy, 30);
+    grad.addColorStop(0, 'rgba(255,220,120,0.9)');
+    grad.addColorStop(0.5, 'rgba(232,196,104,0.5)');
+    grad.addColorStop(1, 'rgba(232,196,104,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 30, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#e8c468';
+    ctx.font = 'bold 14px "Microsoft YaHei"';
+    ctx.fillText(`声压级云图 · ${freq.toFixed(1)}Hz · λ=${lambda.toFixed(2)}m`, 20, 30);
+    ctx.font = '11px "Microsoft YaHei"';
+    ctx.fillStyle = '#8892b0';
+    ctx.fillText('图例: 蓝(低) → 青 → 绿 → 黄 → 红(高)', 20, 50);
+
+    drawColorBar(ctx, w - 40, 60, 20, h - 120);
+}
+
+/* ========================= 声场云图 ========================= */
+function drawSoundField() {
+    const canvas = $('sound-field-canvas');
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+
+    const freq = state.currentAcousticSim
+        ? state.currentAcousticSim.natural_frequencies?.[0] || 261.63
+        : state.selectedBell?.expected_freq_hz || 261.63;
+    const cx = w / 2;
+    const cy = h * 0.35;
+    const srcStrength = 1 / Math.max(20, state.selectedBell?.weight_kg || 50);
+
+    if (state.soundFieldWorker && !state.soundFieldPending) {
+        state.soundFieldReqId++;
+        state.soundFieldPending = true;
+        state._currentSoundFieldFreq = freq;
+        state._currentSoundFieldCx = cx;
+        state._currentSoundFieldCy = cy;
+        state._currentSoundFieldW = w;
+        state._currentSoundFieldH = h;
+
+        state.soundFieldWorker.postMessage({
+            type: 'compute',
+            id: state.soundFieldReqId,
+            params: {
+                width: Math.round(w * dpr),
+                height: Math.round(h * dpr),
+                freq,
+                cx: cx * dpr,
+                cy: cy * dpr,
+                srcStrength,
+                time: performance.now(),
+            },
+        });
+    } else if (!state.soundFieldWorker) {
+        drawSoundFieldFallback();
+    }
+}
+
+function drawSoundFieldOverlay(w, h) {
+    const canvas = $('sound-field-canvas');
+    const ctx = state.soundFieldCtx || canvas.getContext('2d');
+    if (!ctx) return;
+
+    const freq = state._currentSoundFieldFreq || 261.63;
+    const cx = state._currentSoundFieldCx || w / 2;
+    const cy = state._currentSoundFieldCy || h * 0.35;
+    const lambda = 343 / freq;
 
     const grad = ctx.createRadialGradient(cx, cy, 5, cx, cy, 30);
     grad.addColorStop(0, 'rgba(255,220,120,0.9)');
@@ -989,6 +1111,7 @@ function initClock() {
 
 async function init() {
     initThree();
+    initSoundFieldWorker();
     bindEvents();
     initClock();
     await loadBells();

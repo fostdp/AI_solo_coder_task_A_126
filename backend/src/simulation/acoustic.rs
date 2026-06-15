@@ -6,6 +6,10 @@ use uuid::Uuid;
 const SPEED_OF_SOUND: f64 = 343.0;
 const AIR_DENSITY: f64 = 1.21;
 
+const TIKHONOV_ALPHA_MIN: f64 = 1e-8;
+const TIKHONOV_ALPHA_MAX: f64 = 1e-2;
+const LOW_FREQ_THRESHOLD: f64 = 100.0;
+
 pub fn simulate_acoustic(req: &AcousticSimRequest, bell: Option<&Bell>) -> AcousticSimulation {
     let young_modulus = req.young_modulus.unwrap_or(1.1e11);
     let poisson_ratio = req.poisson_ratio.unwrap_or(0.34);
@@ -101,6 +105,246 @@ fn compute_mode_shapes(
     shapes
 }
 
+fn compute_tikhonov_alpha(freq: f64, cond_est: f64) -> f64 {
+    let freq_factor = if freq < LOW_FREQ_THRESHOLD {
+        let ratio = (LOW_FREQ_THRESHOLD - freq) / LOW_FREQ_THRESHOLD;
+        1.0 + ratio * 100.0
+    } else {
+        (LOW_FREQ_THRESHOLD / freq).min(1.0)
+    };
+
+    let cond_factor = if cond_est > 1e6 {
+        cond_est.log10() / 6.0
+    } else {
+        1.0
+    };
+
+    (TIKHONOV_ALPHA_MAX * freq_factor * cond_factor).min(TIKHONOV_ALPHA_MAX)
+}
+
+fn estimate_condition_number(matrix: &[Vec<f64>]) -> f64 {
+    let n = matrix.len();
+    let mut max_row_sum = 0.0f64;
+    let mut min_diag = f64::INFINITY;
+
+    for i in 0..n {
+        let mut row_sum = 0.0;
+        for j in 0..n {
+            row_sum += matrix[i][j].abs();
+            if i == j && matrix[i][j].abs() > 1e-10 {
+                min_diag = min_diag.min(matrix[i][j].abs());
+            }
+        }
+        max_row_sum = max_row_sum.max(row_sum);
+    }
+
+    if min_diag < 1e-10 {
+        1e12
+    } else {
+        max_row_sum / min_diag
+    }
+}
+
+fn mat_transpose(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
+    let n = a.len();
+    let m = a[0].len();
+    let mut at = vec![vec![0.0f64; n]; m];
+    for i in 0..n {
+        for j in 0..m {
+            at[j][i] = a[i][j];
+        }
+    }
+    at
+}
+
+fn mat_mul(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
+    let n = a.len();
+    let m = b[0].len();
+    let k = b.len();
+    let mut c = vec![vec![0.0f64; m]; n];
+    for i in 0..n {
+        for l in 0..k {
+            let ai = a[i][l];
+            if ai.abs() > 1e-10 {
+                for j in 0..m {
+                    c[i][j] += ai * b[l][j];
+                }
+            }
+        }
+    }
+    c
+}
+
+fn mat_vec_mul(a: &[Vec<f64>], x: &[f64]) -> Vec<f64> {
+    let n = a.len();
+    let m = a[0].len();
+    let mut b = vec![0.0f64; n];
+    for i in 0..n {
+        for j in 0..m {
+            b[i] += a[i][j] * x[j];
+        }
+    }
+    b
+}
+
+fn solve_cholesky(a: &mut [Vec<f64>], b: &[f64]) -> Option<Vec<f64>> {
+    let n = a.len();
+    let mut l = vec![vec![0.0f64; n]; n];
+
+    for i in 0..n {
+        for j in 0..=i {
+            let mut sum = a[i][j];
+            for k in 0..j {
+                sum -= l[i][k] * l[j][k];
+            }
+            if i == j {
+                if sum <= 0.0 {
+                    return None;
+                }
+                l[i][j] = sum.sqrt();
+            } else {
+                l[i][j] = sum / l[j][j];
+            }
+        }
+    }
+
+    let mut y = vec![0.0f64; n];
+    for i in 0..n {
+        let mut sum = b[i];
+        for k in 0..i {
+            sum -= l[i][k] * y[k];
+        }
+        y[i] = sum / l[i][i];
+    }
+
+    let mut x = vec![0.0f64; n];
+    for i in (0..n).rev() {
+        let mut sum = y[i];
+        for k in i + 1..n {
+            sum -= l[k][i] * x[k];
+        }
+        x[i] = sum / l[i][i];
+    }
+
+    Some(x)
+}
+
+fn solve_tikhonov(
+    a: &[Vec<f64>],
+    b: &[f64],
+    alpha: f64,
+) -> Vec<f64> {
+    let n = a.len();
+    let at = mat_transpose(a);
+    let ata = mat_mul(&at, a);
+
+    let mut m = vec![vec![0.0f64; n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            m[i][j] = ata[i][j] + if i == j { alpha } else { 0.0 };
+        }
+    }
+
+    let atb = mat_vec_mul(&at, b);
+
+    if let Some(x) = solve_cholesky(&mut m, &atb) {
+        x
+    } else {
+        let mut result = vec![0.0f64; n];
+        for i in 0..n {
+            result[i] = atb[i] / (m[i][i] + 1e-6);
+        }
+        result
+    }
+}
+
+fn construct_bem_matrix(
+    panels: &[(f64, f64, f64, f64, f64, f64)],
+    k: f64,
+) -> Vec<Vec<f64>> {
+    let n = panels.len();
+    let mut a = vec![vec![0.0f64; n]; n];
+    let eps = 1e-10;
+
+    for i in 0..n {
+        let (xi, yi, zi, _, _, _) = panels[i];
+        for j in 0..n {
+            let (xj, yj, zj, nxj, nyj, nzj) = panels[j];
+            let dx = xi - xj;
+            let dy = yi - yj;
+            let dz = zi - zj;
+            let r = (dx * dx + dy * dy + dz * dz).sqrt().max(eps);
+
+            if i == j {
+                a[i][j] = 0.5;
+            } else {
+                let r_dot_n = dx * nxj + dy * nyj + dz * nzj;
+                let ikr = k * r;
+                let g = (0.0 + ikr).exp() / (4.0 * PI * r);
+                let dg_dn = g * r_dot_n * (-1.0 / r + k * 0.01);
+                a[i][j] = dg_dn;
+            }
+        }
+    }
+    a
+}
+
+fn construct_bem_rhs(
+    panels: &[(f64, f64, f64, f64, f64, f64)],
+    k: f64,
+    base_amp: f64,
+) -> Vec<f64> {
+    let n = panels.len();
+    let mut b = vec![0.0f64; n];
+
+    for i in 0..n {
+        let (xi, yi, zi, _, _, _) = panels[i];
+        let r_from_top = (xi * xi + yi * yi + (zi + 1.0) * (zi + 1.0)).sqrt().max(1e-10);
+        let incident = base_amp * (0.0 + k * r_from_top).exp() / r_from_top;
+        b[i] = incident;
+    }
+    b
+}
+
+fn generate_bell_panels(height: f64, diameter: f64, n_panels: usize) -> Vec<(f64, f64, f64, f64, f64, f64)> {
+    let n_theta = (n_panels as f64).sqrt().round() as usize;
+    let n_phi = n_theta * 2;
+    let r = diameter / 2.0;
+    let h = height;
+
+    let mut panels = Vec::with_capacity(n_theta * n_phi);
+    for i in 0..n_theta {
+        let t = i as f64 / (n_theta - 1) as f64;
+        let y = h / 2.0 - t * h;
+        let radius = if t < 0.15 {
+            r * 0.6 + (r * 0.8 - r * 0.6) * (t / 0.15)
+        } else if t < 0.7 {
+            let lt = (t - 0.15) / 0.55;
+            r * 0.8 * (1.0 + 0.08 * (lt * PI).sin())
+        } else {
+            let lt = (t - 0.7) / 0.3;
+            r * 0.8 + (r - r * 0.8) * (1.0 - (lt * PI / 2.0).cos())
+        };
+
+        for j in 0..n_phi {
+            let phi = (j as f64 / n_phi as f64) * 2.0 * PI;
+            let x = radius * phi.cos();
+            let z = radius * phi.sin();
+
+            let nx = phi.cos();
+            let ny = 0.1;
+            let nz = phi.sin();
+            let n_len = (nx * nx + ny * ny + nz * nz).sqrt();
+
+            panels.push((
+                x, y, z,
+                nx / n_len, ny / n_len, nz / n_len,
+            ));
+        }
+    }
+    panels
+}
+
 fn compute_far_field_pressure(
     frequencies: &[f64],
     height: f64,
@@ -110,7 +354,25 @@ fn compute_far_field_pressure(
     let r = 10.0;
     let base_freq = frequencies[0];
     let k = 2.0 * PI * base_freq / SPEED_OF_SOUND;
+
+    let n_panels = 32;
+    let panels = generate_bell_panels(height, diameter, n_panels);
     let bell_area = PI * (diameter / 2.0).powi(2) + PI * diameter * height;
+
+    let bem_matrix = construct_bem_matrix(&panels, k);
+    let cond_est = estimate_condition_number(&bem_matrix);
+    let alpha = compute_tikhonov_alpha(base_freq, cond_est);
+
+    let base_amp = AIR_DENSITY * SPEED_OF_SOUND * bell_area * 0.001 / (2.0 * PI * r);
+    let rhs = construct_bem_rhs(&panels, k, base_amp);
+    let surface_pressure = solve_tikhonov(&bem_matrix, &rhs, alpha);
+
+    let mut avg_surface_p = 0.0;
+    for &p in &surface_pressure {
+        avg_surface_p += p.abs();
+    }
+    avg_surface_p /= surface_pressure.len() as f64;
+    let p_ref = 2.0e-5;
 
     for theta_deg in 0..=180u32 {
         let theta = theta_deg as f64 * PI / 180.0;
@@ -119,13 +381,28 @@ fn compute_far_field_pressure(
 
             let directivity = (1.0 + theta.cos().powi(2))
                 * (1.0 + 0.5 * (2.0 * phi).cos());
-            let amplitude =
-                (AIR_DENSITY * SPEED_OF_SOUND * bell_area * 0.001) / (2.0 * PI * r);
-            let pressure_db = 20.0 * (amplitude * directivity * k / 2.0e-5).log10();
+
+            let reg_factor = if base_freq < LOW_FREQ_THRESHOLD {
+                0.7 + 0.3 * (base_freq / LOW_FREQ_THRESHOLD)
+            } else {
+                1.0
+            };
+
+            let amplitude = avg_surface_p * reg_factor / r;
+            let pressure = amplitude * directivity;
+            let pressure_db = 20.0 * (pressure.abs().max(p_ref) / p_ref).log10();
 
             result.push((theta_deg as f64, phi_deg as f64, pressure_db.max(0.0)));
         }
     }
+
+    if base_freq < LOW_FREQ_THRESHOLD {
+        eprintln!(
+            "[BEM] freq={:.1}Hz, cond≈{:.2e}, α={:.2e}, panels={}",
+            base_freq, cond_est, alpha, n_panels
+        );
+    }
+
     result
 }
 
