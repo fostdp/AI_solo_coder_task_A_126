@@ -1,0 +1,89 @@
+version: "3.9"
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: bell-clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    networks:
+      - bell-net
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: bell-mqtt
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mqtt_data:/mosquitto/data
+      - mqtt_log:/mosquitto/log
+    networks:
+      - bell-net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: bell-backend
+    ports:
+      - "8080:8080"
+    environment:
+      SERVER_PORT: 8080
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DATABASE: bell_casting
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+      MQTT_CLIENT_ID: bell_backend_docker
+      MQTT_TOPIC: bell_casting/alerts
+      RUST_LOG: info
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    networks:
+      - bell-net
+    restart: unless-stopped
+
+  frontend:
+    image: nginx:alpine
+    container_name: bell-frontend
+    ports:
+      - "8081:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+      - ./config/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend
+    networks:
+      - bell-net
+    restart: unless-stopped
+
+volumes:
+  clickhouse_data:
+  mqtt_data:
+  mqtt_log:
+
+networks:
+  bell-net:
+    driver: bridge
