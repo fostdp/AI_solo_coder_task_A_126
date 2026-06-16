@@ -8,6 +8,7 @@ mod db;
 mod dtu_receiver;
 mod handlers;
 mod message_bus;
+mod metrics_collector;
 mod models;
 mod mqtt_client;
 mod simulation;
@@ -180,8 +181,13 @@ async fn main() -> anyhow::Result<()> {
         .with_state(app_state)
         .layer(cors);
 
+    let _metrics = metrics_collector::MetricsGuard::new();
+    let metrics_addr = format!("0.0.0.0:{}", config.metrics_port);
+    metrics_collector::start_metrics_server(&metrics_addr).await?;
+
     let addr: SocketAddr = format!("0.0.0.0:{}", config.server_port).parse()?;
-    info!("🚀 HTTP 服务监听 http://{}", addr);
+    info!("🚀 HTTP API 服务监听 http://{}", addr);
+    info!("📊 Prometheus metrics 监听 http://{}", metrics_addr);
     info!("=== 系统启动完成 ===");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

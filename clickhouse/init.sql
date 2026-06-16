@@ -1,5 +1,6 @@
 -- =====================================================
 -- 古代铸钟工艺仿真与钟声传播模拟系统 - ClickHouse 初始化脚本
+-- 包含：基础表、降采样物化视图、保留策略
 -- =====================================================
 
 CREATE DATABASE IF NOT EXISTS bell_casting
@@ -30,7 +31,7 @@ ORDER BY (bell_id, created_at)
 COMMENT '钟体基础信息';
 
 -- =====================================================
--- 2. 传感器实时数据表（每小时上报）
+-- 2. 传感器实时数据表（每小时上报）- 原始数据
 -- =====================================================
 CREATE TABLE IF NOT EXISTS sensor_readings (
     reading_id UUID DEFAULT generateUUIDv4(),
@@ -48,28 +49,136 @@ CREATE TABLE IF NOT EXISTS sensor_readings (
     acoustic_freq_hz Float64 COMMENT '实测基频(Hz)',
     acoustic_amplitude Float64 COMMENT '振幅',
     acoustic_decay Float64 COMMENT '衰减系数',
-    acoustic_harmonics Array(Float64) COMMENT '各次谐波频率',
+    acoustic_harmonics String COMMENT '各次谐波频率(JSON数组)',
     PRIMARY KEY (reading_id)
 )
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (bell_id, timestamp)
-TTL timestamp + INTERVAL 1 YEAR
-COMMENT '传感器数据 - 合金成分、温度、壁厚、声学参数';
+TTL timestamp + INTERVAL 30 DAY DELETE
+COMMENT '传感器原始数据 - 保留30天';
 
 -- =====================================================
--- 3. 铸造仿真结果表（凝固过程、缩孔预测）
+-- 2.1 传感器数据 - 小时级降采样
+-- =====================================================
+CREATE TABLE IF NOT EXISTS sensor_readings_hourly (
+    bell_id UUID,
+    timestamp_hour DateTime,
+    temp_avg Float64,
+    temp_min Float64,
+    temp_max Float64,
+    temp_gradient_avg Float64,
+    wall_thickness_avg Float64,
+    thickness_deviation_avg Float64,
+    alloy_cu_avg Float64,
+    alloy_sn_avg Float64,
+    alloy_pb_avg Float64,
+    alloy_zn_avg Float64,
+    acoustic_freq_avg Float64,
+    acoustic_amplitude_avg Float64,
+    acoustic_decay_avg Float64,
+    readings_count UInt64,
+    PRIMARY KEY (bell_id, timestamp_hour)
+)
+ENGINE = SummingMergeTree()
+PARTITION BY toYYYYMM(timestamp_hour)
+ORDER BY (bell_id, timestamp_hour)
+TTL timestamp_hour + INTERVAL 6 MONTH DELETE
+COMMENT '传感器小时级降采样 - 保留6个月';
+
+-- =====================================================
+-- 2.2 传感器数据 - 日级降采样
+-- =====================================================
+CREATE TABLE IF NOT EXISTS sensor_readings_daily (
+    bell_id UUID,
+    timestamp_date Date,
+    temp_avg Float64,
+    temp_min Float64,
+    temp_max Float64,
+    temp_gradient_avg Float64,
+    wall_thickness_avg Float64,
+    thickness_deviation_avg Float64,
+    alloy_cu_avg Float64,
+    alloy_sn_avg Float64,
+    alloy_pb_avg Float64,
+    alloy_zn_avg Float64,
+    acoustic_freq_avg Float64,
+    acoustic_amplitude_avg Float64,
+    acoustic_decay_avg Float64,
+    readings_count UInt64,
+    PRIMARY KEY (bell_id, timestamp_date)
+)
+ENGINE = SummingMergeTree()
+PARTITION BY toYYYYMM(timestamp_date)
+ORDER BY (bell_id, timestamp_date)
+TTL timestamp_date + INTERVAL 3 YEAR DELETE
+COMMENT '传感器日级降采样 - 保留3年';
+
+-- =====================================================
+-- 2.3 物化视图：原始数据 -> 小时级降采样
+-- =====================================================
+CREATE MATERIALIZED VIEW IF NOT EXISTS sensor_readings_to_hourly
+TO sensor_readings_hourly
+AS
+SELECT
+    bell_id,
+    toStartOfHour(timestamp) AS timestamp_hour,
+    avg(temp_celsius) AS temp_avg,
+    min(temp_celsius) AS temp_min,
+    max(temp_celsius) AS temp_max,
+    avg(temp_gradient) AS temp_gradient_avg,
+    avg(wall_thickness_mm) AS wall_thickness_avg,
+    avg(thickness_deviation) AS thickness_deviation_avg,
+    avg(alloy_cu) AS alloy_cu_avg,
+    avg(alloy_sn) AS alloy_sn_avg,
+    avg(alloy_pb) AS alloy_pb_avg,
+    avg(alloy_zn) AS alloy_zn_avg,
+    avg(acoustic_freq_hz) AS acoustic_freq_avg,
+    avg(acoustic_amplitude) AS acoustic_amplitude_avg,
+    avg(acoustic_decay) AS acoustic_decay_avg,
+    count() AS readings_count
+FROM sensor_readings
+GROUP BY bell_id, timestamp_hour;
+
+-- =====================================================
+-- 2.4 物化视图：小时级 -> 日级降采样
+-- =====================================================
+CREATE MATERIALIZED VIEW IF NOT EXISTS sensor_readings_to_daily
+TO sensor_readings_daily
+AS
+SELECT
+    bell_id,
+    toDate(timestamp_hour) AS timestamp_date,
+    sum(temp_avg * readings_count) / sum(readings_count) AS temp_avg,
+    min(temp_min) AS temp_min,
+    max(temp_max) AS temp_max,
+    sum(temp_gradient_avg * readings_count) / sum(readings_count) AS temp_gradient_avg,
+    sum(wall_thickness_avg * readings_count) / sum(readings_count) AS wall_thickness_avg,
+    sum(thickness_deviation_avg * readings_count) / sum(readings_count) AS thickness_deviation_avg,
+    sum(alloy_cu_avg * readings_count) / sum(readings_count) AS alloy_cu_avg,
+    sum(alloy_sn_avg * readings_count) / sum(readings_count) AS alloy_sn_avg,
+    sum(alloy_pb_avg * readings_count) / sum(readings_count) AS alloy_pb_avg,
+    sum(alloy_zn_avg * readings_count) / sum(readings_count) AS alloy_zn_avg,
+    sum(acoustic_freq_avg * readings_count) / sum(readings_count) AS acoustic_freq_avg,
+    sum(acoustic_amplitude_avg * readings_count) / sum(readings_count) AS acoustic_amplitude_avg,
+    sum(acoustic_decay_avg * readings_count) / sum(readings_count) AS acoustic_decay_avg,
+    sum(readings_count) AS readings_count
+FROM sensor_readings_hourly
+GROUP BY bell_id, timestamp_date;
+
+-- =====================================================
+-- 3. 铸造仿真结果表
 -- =====================================================
 CREATE TABLE IF NOT EXISTS casting_simulation (
     sim_id UUID DEFAULT generateUUIDv4(),
     bell_id UUID COMMENT '关联钟ID',
     timestamp DateTime DEFAULT now() COMMENT '仿真时间',
-    sim_type String COMMENT '仿真类型：solidification(凝固)、shrinkage(缩孔)、stress(应力)',
+    sim_type String COMMENT '仿真类型：solidification、shrinkage、stress',
     time_step_sec UInt32 COMMENT '仿真时间步(秒)',
-    temp_field Array(Array(Array(Float64))) COMMENT '3D温度场 [x][y][z]',
-    solid_fraction Array(Array(Array(Float64))) COMMENT '固相率场 0~1',
-    shrinkage_porosity Array(Array(Array(Float64))) COMMENT '缩孔率场 0~1',
-    defect_locations Array(Tuple(Float64, Float64, Float64, Float64)) COMMENT '缺陷位置(x,y,z,严重度)',
+    temp_field String COMMENT '3D温度场 JSON',
+    solid_fraction String COMMENT '固相率场 JSON',
+    shrinkage_porosity String COMMENT '缩孔率场 JSON',
+    defect_locations String COMMENT '缺陷位置 JSON',
     defect_count UInt32 COMMENT '缺陷总数',
     max_shrinkage Float64 COMMENT '最大缩孔率',
     cooling_rate Float64 COMMENT '冷却速率(°C/s)',
@@ -79,21 +188,21 @@ CREATE TABLE IF NOT EXISTS casting_simulation (
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (bell_id, timestamp)
-TTL timestamp + INTERVAL 6 MONTH
-COMMENT '铸造仿真 - 凝固理论与缩孔预测';
+TTL timestamp + INTERVAL 3 MONTH DELETE
+COMMENT '铸造仿真结果 - 保留3个月';
 
 -- =====================================================
--- 4. 声学仿真结果表（有限元法、声场云图）
+-- 4. 声学仿真结果表
 -- =====================================================
 CREATE TABLE IF NOT EXISTS acoustic_simulation (
     sim_id UUID DEFAULT generateUUIDv4(),
     bell_id UUID COMMENT '关联钟ID',
     timestamp DateTime DEFAULT now() COMMENT '仿真时间',
-    method String COMMENT '计算方法：FEM(有限元)、BEM(边界元)',
-    natural_frequencies Array(Float64) COMMENT '各阶固有频率(Hz)',
-    mode_shapes Array(Array(Array(Array(Float64)))) COMMENT '各阶振型 [mode][x][y][z][disp]',
-    far_field_pressure Array(Tuple(Float64, Float64, Float64)) COMMENT '远场声压 (theta, phi, pressure_dB)',
-    sound_field_2d Array(Array(Float64)) COMMENT '2D声场截面云图数据',
+    method String COMMENT '计算方法：FEM、BEM',
+    natural_frequencies String COMMENT '各阶固有频率 JSON',
+    mode_shapes String COMMENT '各阶振型 JSON',
+    far_field_pressure String COMMENT '远场声压 JSON',
+    sound_field_2d String COMMENT '2D声场截面 JSON',
     directivity_index Float64 COMMENT '指向性指数',
     sound_power Float64 COMMENT '辐射声功率(W)',
     pitch_deviation_cents Float64 COMMENT '音准偏差(音分)',
@@ -103,8 +212,8 @@ CREATE TABLE IF NOT EXISTS acoustic_simulation (
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (bell_id, timestamp)
-TTL timestamp + INTERVAL 6 MONTH
-COMMENT '声学仿真 - 固有频率、远场声压、声场云图';
+TTL timestamp + INTERVAL 3 MONTH DELETE
+COMMENT '声学仿真结果 - 保留3个月';
 
 -- =====================================================
 -- 5. 告警事件表
@@ -113,7 +222,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     alert_id UUID DEFAULT generateUUIDv4(),
     bell_id UUID COMMENT '关联钟ID',
     timestamp DateTime DEFAULT now() COMMENT '告警时间',
-    alert_type String COMMENT '告警类型：defect(铸造缺陷)、pitch(音准偏差)、temp(温度异常)、alloy(成分异常)',
+    alert_type String COMMENT '告警类型：defect、pitch、temp、alloy',
     severity String COMMENT '严重等级：warning、danger、critical',
     message String COMMENT '告警详情',
     related_reading UUID COMMENT '关联传感器读数ID',
@@ -125,25 +234,27 @@ CREATE TABLE IF NOT EXISTS alerts (
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (bell_id, severity, timestamp)
-TTL timestamp + INTERVAL 2 YEAR
-COMMENT '告警事件表';
+TTL timestamp + INTERVAL 1 YEAR DELETE
+COMMENT '告警事件表 - 保留1年';
 
 -- =====================================================
--- 6. 铸造过程状态表（用于前端动画）
+-- 6. 铸造过程状态表
 -- =====================================================
 CREATE TABLE IF NOT EXISTS casting_process (
     process_id UUID DEFAULT generateUUIDv4(),
     bell_id UUID COMMENT '关联钟ID',
     timestamp DateTime DEFAULT now() COMMENT '时间戳',
-    stage String COMMENT '阶段：molding(制模)、melting(熔炼)、pouring(浇注)、cooling(冷却)、solidifying(凝固)、finished(完成)',
+    stage String COMMENT '阶段：molding、melting、pouring、cooling、solidifying、finished',
     progress Float64 COMMENT '进度 0~1',
     current_temp Float64 COMMENT '当前温度',
     mold_fill_level Float64 COMMENT '铸型填充率 0~1',
     PRIMARY KEY (process_id)
 )
 ENGINE = MergeTree()
+PARTITION BY toYYYYMM(timestamp)
 ORDER BY (bell_id, timestamp)
-COMMENT '铸造过程状态';
+TTL timestamp + INTERVAL 1 MONTH DELETE
+COMMENT '铸造过程状态 - 保留1个月';
 
 -- =====================================================
 -- 数据视图 - 最新传感器数据
@@ -167,6 +278,21 @@ SELECT *
 FROM alerts
 WHERE resolved = false
 ORDER BY timestamp DESC;
+
+-- =====================================================
+-- 数据视图 - 告警统计（按类型和严重程度）
+-- =====================================================
+CREATE VIEW IF NOT EXISTS alert_statistics AS
+SELECT
+    toStartOfDay(timestamp) AS date,
+    alert_type,
+    severity,
+    count() AS alert_count,
+    uniq(bell_id) AS affected_bells
+FROM alerts
+WHERE timestamp >= now() - INTERVAL 7 DAY
+GROUP BY date, alert_type, severity
+ORDER BY date DESC, alert_type, severity;
 
 -- =====================================================
 -- 示例数据

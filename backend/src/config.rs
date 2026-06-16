@@ -4,6 +4,7 @@ use std::env;
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub server_port: u16,
+    pub metrics_port: u16,
     pub clickhouse_url: String,
     pub clickhouse_user: String,
     pub clickhouse_password: String,
@@ -23,6 +24,10 @@ impl Config {
                 .ok()
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(8080),
+            metrics_port: env::var("METRICS_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(9090),
             clickhouse_url: env::var("CLICKHOUSE_URL")
                 .unwrap_or_else(|_| "http://localhost:8123".to_string()),
             clickhouse_user: env::var("CLICKHOUSE_USER")

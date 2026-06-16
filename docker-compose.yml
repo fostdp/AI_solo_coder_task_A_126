@@ -1,18 +1,26 @@
 version: "3.9"
 
+# ============================================================
+# 古代铸钟工艺仿真与钟声传播模拟系统
+# 微服务架构：Rust后端 + ClickHouse + MQTT + 模拟器 + 监控
+# ============================================================
+
 services:
+  # ---------- ClickHouse 时序数据库 ----------
   clickhouse:
     image: clickhouse/clickhouse-server:24.3
     container_name: bell-clickhouse
+    restart: unless-stopped
     ports:
       - "8123:8123"
       - "9000:9000"
     environment:
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./config/clickhouse-config.xml:/etc/clickhouse-server/config.d/custom.xml:ro
     healthcheck:
       test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
       interval: 5s
@@ -25,9 +33,11 @@ services:
     networks:
       - bell-net
 
+  # ---------- MQTT Broker (Eclipse Mosquitto) ----------
   mosquitto:
     image: eclipse-mosquitto:2.0
     container_name: bell-mqtt
+    restart: unless-stopped
     ports:
       - "1883:1883"
       - "9001:9001"
@@ -38,24 +48,31 @@ services:
     networks:
       - bell-net
 
+  # ---------- Rust 后端服务（多阶段构建 + 静态二进制）----------
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: bell-backend
+    restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${SERVER_PORT:-8080}:8080"
+      - "${METRICS_PORT:-9090}:9090"
     environment:
       SERVER_PORT: 8080
+      METRICS_PORT: 9090
       CLICKHOUSE_URL: http://clickhouse:8123
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: ""
-      CLICKHOUSE_DATABASE: bell_casting
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-bell_casting}
       MQTT_HOST: mosquitto
       MQTT_PORT: 1883
       MQTT_CLIENT_ID: bell_backend_docker
-      MQTT_TOPIC: bell_casting/alerts
-      RUST_LOG: info
+      MQTT_TOPIC: ${MQTT_TOPIC:-bell_casting/alerts}
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      RUST_LOG: ${RUST_LOG:-info}
+      SKIP_MQTT: ${SKIP_MQTT:-false}
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -63,13 +80,14 @@ services:
         condition: service_started
     networks:
       - bell-net
-    restart: unless-stopped
 
+  # ---------- 前端 Nginx（Gzip压缩 + 静态资源缓存）----------
   frontend:
     image: nginx:alpine
     container_name: bell-frontend
+    restart: unless-stopped
     ports:
-      - "8081:80"
+      - "${FRONTEND_PORT:-8081}:80"
     volumes:
       - ./frontend:/usr/share/nginx/html:ro
       - ./config/nginx.conf:/etc/nginx/conf.d/default.conf:ro
@@ -77,13 +95,92 @@ services:
       - backend
     networks:
       - bell-net
-    restart: unless-stopped
 
+  # ---------- 铸钟工艺模拟器 ----------
+  simulator:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    container_name: bell-simulator
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: http://backend:8080
+      SIMULATOR_MODE: ${SIMULATOR_MODE:-hourly}
+      SIMULATOR_INTERVAL: ${SIMULATOR_INTERVAL:-60}
+      SIMULATOR_ERROR_RATE: ${SIMULATOR_ERROR_RATE:-0.05}
+      SIMULATOR_ACCELERATED: ${SIMULATOR_ACCELERATED:-true}
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - bell-net
+    profiles:
+      - simulator
+
+  # ---------- Prometheus 监控 ----------
+  prometheus:
+    image: prom/prometheus:v2.51
+    container_name: bell-prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROM_PORT:-9091}:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - backend
+    networks:
+      - bell-net
+    profiles:
+      - monitoring
+
+  # ---------- Grafana 可视化 ----------
+  grafana:
+    image: grafana/grafana:10.4
+    container_name: bell-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - bell-net
+    profiles:
+      - monitoring
+
+# ============================================================
+# Volumes
+# ============================================================
 volumes:
   clickhouse_data:
+    driver: local
   mqtt_data:
+    driver: local
   mqtt_log:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
 
+# ============================================================
+# Networks
+# ============================================================
 networks:
   bell-net:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
